@@ -137,7 +137,7 @@ function initDashboard(){
 
     scoresTabBtn.addEventListener("click",()=>{ scoresTab.classList.add("active"); votesTab.classList.remove("active"); triggerRankingAnimation(); });
     votesTabBtn.addEventListener("click",()=>{ votesTab.classList.add("active"); scoresTab.classList.remove("active"); drawVotesChart(); });
-    updateVideosBtn.addEventListener("click", updateVideosFromJSON); // Attach the new function
+    updateVideosBtn.addEventListener("click", updateVideosFromJSON);
 
     onSnapshot(videosCol,snapshot=>{
         videosData={};
@@ -155,13 +155,11 @@ function initDashboard(){
         Object.values(videosData).forEach(v=>{ v.votePoints=0; v.upvotePoints=0; v.totalScore=0; v.rank1Votes=0; v.rank2Votes=0; v.rank3Votes=0; });
 
         votesData.forEach(vote=>{
-            // The vote ID must match the video document ID (Reddit Post ID)
             if(vote.rank1 && videosData[vote.rank1]) videosData[vote.rank1].votePoints+=100, videosData[vote.rank1].rank1Votes+=1;
             if(vote.rank2 && videosData[vote.rank2]) videosData[vote.rank2].votePoints+=50, videosData[vote.rank2].rank2Votes+=1;
             if(vote.rank3 && videosData[vote.rank3]) videosData[vote.rank3].votePoints+=25, videosData[vote.rank3].rank3Votes+=1;
         });
 
-        // Upvote score calculation remains the same
         const sortedByUpvotes=Object.entries(videosData).sort((a,b)=>b[1].upvotes-a[1].upvotes);
         const step=10; sortedByUpvotes.forEach(([id,v],i)=>{ videosData[id].upvotePoints=step*(sortedByUpvotes.length-i); });
 
@@ -219,7 +217,7 @@ function initDashboard(){
     }
     google.charts.load('current',{'packages':['corechart']});
 
-    // --- CSV export (titles) ---
+    // --- CSV export ---
     exportCsvBtn.addEventListener('click',()=>{
         if(votesData.length===0){ alert("No votes to export."); return; }
         const header=["User ID","Rank 1 (ID)","Rank 2 (ID)","Rank 3 (ID)","Rank 1 (Title)","Rank 2 (Title)","Rank 3 (Title)","Timestamp"];
@@ -239,79 +237,67 @@ function initDashboard(){
         alert("Votes exported successfully to CSV.");
     });
 
-    // --- NEW: Function to update videos from links.json and Firebase (now fetching real upvotes) ---
+    // --- UPDATED: Replace old videos completely ---
     async function updateVideosFromJSON() {
-        if(!confirm("Are you sure you want to update the video list? This will sync new videos from links.json to Firebase and fetch current upvotes.")) return;
+        if (!confirm("This will replace ALL videos in Firestore with those from links.json. Continue?")) return;
 
         try {
-            // 1. Fetch the JSON data from links.json
             const response = await fetch('links.json');
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
             const redditUrls = await response.json();
 
-            // 2. Fetch data (Title, Reddit ID, Upvotes) for each URL
             const videoDataList = [];
-            
             const promises = redditUrls.map(async (url) => {
                 try {
-                    // Fetch Reddit post data using the URL + .json trick
                     const r = await fetch(url + ".json");
                     const j = await r.json();
-                    // Reddit data structure is [ {data: { children: [ {data: post_data} ] } } ]
                     const data = j[0].data.children[0].data;
-
                     const title = data.title || "Untitled Post";
-                    const upvotes = data.score || 0; // Use the actual 'score' field for upvotes
-
-                    // Extract the unique Reddit post ID from the URL (e.g., 1ng1q7u)
+                    const upvotes = data.score || 0;
                     const match = url.match(/\/comments\/([a-z0-9]+)\//);
                     const id = match ? match[1] : null;
-                    
-                    if (id) {
-                         videoDataList.push({ 
-                            id: id, 
-                            title: title, 
-                            upvotes: upvotes, 
-                            redditUrl: url 
-                        });
-                    } else {
-                        console.warn(`Could not extract Reddit ID from URL: ${url}. Skipping.`);
-                    }
-
-
-                } catch(err) {
-                    console.error(`Failed to fetch Reddit data for URL: ${url}`, err);
+                    if (id) videoDataList.push({ id, title, upvotes, redditUrl: url });
+                } catch (err) {
+                    console.error(`Failed to fetch Reddit data for ${url}`, err);
                 }
             });
 
             await Promise.allSettled(promises);
-            
             if (videoDataList.length === 0) {
-                alert("No valid video data was processed from links.json. Check the console for errors.");
+                alert("No valid videos found in links.json.");
                 return;
             }
 
-            // 3. Prepare Batch Write to Firestore
-            const batch = writeBatch(db);
-            let updateCount = 0;
+            // Delete old videos first
+            const videosRef = collection(db, "videos");
+            const existing = await getDocs(videosRef);
+            const batchSize = 500;
 
-            videoDataList.forEach(video => {
-                const videoDocRef = doc(db, "videos", video.id); // Use Reddit ID as Document ID
-                
-                // Set the data. Use merge:true to ensure existing vote data is NOT overwritten
-                batch.set(videoDocRef, {
-                    title: video.title,
-                    upvotes: video.upvotes,
-                    redditUrl: video.redditUrl
-                }, { merge: true }); 
-                updateCount++;
-            });
+            const chunk = (arr, size) => {
+                const out = [];
+                for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+                return out;
+            };
 
-            // 4. Commit the Batch Write
-            await batch.commit();
+            const toDelete = existing.docs.map(d => d.id);
+            let deletedCount = 0;
+            for (const chunkSet of chunk(toDelete, batchSize)) {
+                const batch = writeBatch(db);
+                chunkSet.forEach(id => batch.delete(doc(db, "videos", id)));
+                await batch.commit();
+                deletedCount += chunkSet.length;
+            }
 
-            alert(`${updateCount} videos have been successfully updated/synced in Firestore with the latest titles and upvote counts.`);
+            // Write new videos
+            let writtenCount = 0;
+            for (const chunkSet of chunk(videoDataList, batchSize)) {
+                const batch = writeBatch(db);
+                chunkSet.forEach(v => batch.set(doc(db, "videos", v.id), v));
+                await batch.commit();
+                writtenCount += chunkSet.length;
+            }
 
+            alert(`Updated Firestore: deleted ${deletedCount} old videos, added ${writtenCount} new ones.`);
         } catch (e) {
             console.error("Error updating videos:", e);
             alert("Failed to update videos. Check console for details.");
