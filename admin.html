@@ -301,9 +301,11 @@ https://preview.redd.it/57it9cmmxnsf1.jpeg?width=1991&format=pjpg&auto=webp&s=60
                     const data = j[0].data.children[0].data;
                     const title = data.title || "Untitled Post";
                     const upvotes = data.score || 0;
+                    const op = data.author || "unknown_OP";
                     const match = url.match(/\/comments\/([a-z0-9]+)\//);
                     const id = match ? match[1] : null;
-                    if (id) videoDataList.push({ id, title, upvotes, redditUrl: url });
+                    if (id) videoDataList.push({ id, title, upvotes, redditUrl: url, op });
+
                 } catch (err) {
                     console.error(`Failed to fetch Reddit data for ${url}`, err);
                 }
