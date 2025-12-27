@@ -83,7 +83,7 @@ function updateTop3Styling() {
 
 async function loadPosts() {
   try {
-    const res = await fetch("https://raw.githubusercontent.com/vpsj/rotm_test/main/links.json");
+    const res = await fetch("https://raw.githubusercontent.com/vpsj/rotm_v2/main/links.json");
     const urls = await res.json();
 
     const promises = urls.map(async (url) => {
